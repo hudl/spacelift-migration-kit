@@ -64,7 +64,8 @@ class Spacelift:
             data = benedict(response.json())
 
             if "errors" in data:
-                raise RuntimeError(f"Spacelift API Error: {data.get('errors[0].message')}")
+                raise RuntimeError(
+                    f"Spacelift API Error: {data.get('errors[0].message')}")
 
             self._api_jwt_token = data.get("data.apiKeyUser.jwt")
 
@@ -162,7 +163,8 @@ class Spacelift:
           }
         """
 
-        env_var_id = f"TF_VAR_{env_var.get('name')}" if env_var.get("type") == "terraform" else env_var.get("name")
+        env_var_id = f"TF_VAR_{env_var.get('name')}" if env_var.get(
+            "type") == "terraform" else env_var.get("name")
 
         variables = {
             "stackId": env_var.get("_relationships.stack.slug"),
@@ -248,10 +250,13 @@ class Spacelift:
         versions = self._get_module_versions(module=module)
 
         if version in versions:
-            logging.info(f"Version '{version}' of module '{module}' already exists. Skipping.")
+            logging.info(
+                f"Version '{version}' of module '{module}' already exists. Skipping.")
         else:
-            self._create_module_version(commit_sha=commit_sha, module=module, version=version)
-            logging.debug(f"Created version '{version}' using commit '{commit_sha}' for module '{module}'")
+            self._create_module_version(
+                commit_sha=commit_sha, module=module, version=version)
+            logging.debug(
+                f"Created version '{version}' using commit '{commit_sha}' for module '{module}'")
 
     def _set_mounted_file_content(self, content: str, filename: str, stack_id: str, write_only: bool = False) -> None:
         operation = """
@@ -352,7 +357,8 @@ mutation CreateTask($stackId: ID!, $command: String!, $skipInitialization: Boole
             "skipInitialization": skip_initialization,
         }
 
-        trigger_response = self.call_api(operation=trigger_mutation, variables=trigger_variables)
+        trigger_response = self.call_api(
+            operation=trigger_mutation, variables=trigger_variables)
         run_id = trigger_response.get("data.taskCreate.id")
 
         if wait:
@@ -371,7 +377,8 @@ query GetRun($stackId: ID!, $runId: ID!) {
             }
 
             while True:
-                run_state_response = self.call_api(operation=run_state_query, variables=run_state_variables)
+                run_state_response = self.call_api(
+                    operation=run_state_query, variables=run_state_variables)
                 time.sleep(2)
                 if run_state_response.get("data.stack.run.finished"):
                     break

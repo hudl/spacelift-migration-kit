@@ -2,7 +2,23 @@
 
 # Display environment variables so that they can be extracted from the plan logs
 echo '<==================== SMK EXPORT ====================' >> /mnt/spacelift-migration-kit/$TFC_RUN_ID.txt
-env >> /mnt/spacelift-migration-kit/$TFC_RUN_ID.txt
+
+# Use Python to safely export environment variables with base64 encoding to handle multiline values
+python3 -c "
+import os
+import base64
+for name, value in os.environ.items():
+    encoded_value = base64.b64encode(value.encode('utf-8')).decode('ascii')
+    print(f'SMK_VAR_{name}={encoded_value}')
+" >> /mnt/spacelift-migration-kit/$TFC_RUN_ID.txt
+
+python3 -c "
+import os
+import base64
+for name, value in os.environ.items():
+    print(f'SMK_VAR_{name}=masked')
+"
+
 echo '===================== SMK EXPORT ===================>' >> /mnt/spacelift-migration-kit/$TFC_RUN_ID.txt
 
 # Replace the 'terraform' binary with the 'true' command so that all commands return a 0 exit code

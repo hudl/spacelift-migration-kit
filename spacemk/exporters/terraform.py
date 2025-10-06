@@ -1,4 +1,5 @@
 # ruff: noqa: PERF401
+import base64
 import json
 import logging
 import os
@@ -25,6 +26,7 @@ class TerraformExporterPlanError(Exception):
     def __init__(self, organization_id: str, workspace_id: str):
         message = f"Could not trigger a plan for the '{organization_id}/{workspace_id}' workspace"
         super().__init__(message)
+
 
 class AgentStartError(Exception):
     def __init__(self):
@@ -544,15 +546,27 @@ class TerraformExporter(BaseExporter):
                             for var in data.get("variable_set_variables"):
                                 if var.get("relationships.varset.data.id") == var_set_id:
                                     key = var.get("attributes.key")
-                                    if line.startswith(f"{key}="):
-                                        value = line.removeprefix(f"{key}=")
-                                        masked_value = "*" * len(value)
+                                    if line.startswith(f"SMK_VAR_{key}="):
+                                        # Decode base64 encoded value
+                                        encoded_value = line.removeprefix(
+                                            f"SMK_VAR_{key}=")
+                                        try:
+                                            value = base64.b64decode(
+                                                encoded_value.encode('ascii')).decode('utf-8')
+                                            masked_value = "*" * len(value)
 
-                                        logging.debug(f"Found sensitive env var: '{key}={masked_value}'")
+                                            logging.debug(
+                                                f"Found sensitive env var: '{key}={masked_value}'")
 
-                                        var["attributes.value"] = value
+                                            var["attributes.value"] = value
+                                        except Exception as e:
+                                            logging.warning(
+                                                f"Failed to decode variable {key}: {e}")
+                                            # Fall back to the original encoded value for debugging
+                                            var["attributes.value"] = encoded_value
 
-                    reset_variable_set_relationships(var_set_id, variable_set_relationship_backup)
+                    reset_variable_set_relationships(
+                        var_set_id, variable_set_relationship_backup)
                     var_set_reset = True
 
                 if agent_container.exists() and agent_container.state.running:
@@ -583,11 +597,10 @@ class TerraformExporter(BaseExporter):
             if agent_pool_id:
                 self._delete_agent_pool(id_=agent_pool_id)
 
-
         return data
 
-
     # KLUDGE: We should break this function down in smaller functions
+
     def _enrich_workspace_variable_data(self, data: dict) -> dict:  # noqa: PLR0912, PLR0915
         def find_workspace(data: dict, workspace_id: str) -> dict:
             for workspace in data.get("workspaces"):
@@ -634,7 +647,8 @@ class TerraformExporter(BaseExporter):
             if workspace_id not in organizations[organization_id]:
                 organizations[organization_id][workspace_id] = benedict()
 
-            organizations[organization_id][workspace_id][variable.get("id")] = variable.get("attributes.key")
+            organizations[organization_id][workspace_id][variable.get(
+                "id")] = variable.get("attributes.key")
 
         if len(organizations) == 0 or len(organizations.keys()) == 0:
             return data
@@ -648,9 +662,11 @@ class TerraformExporter(BaseExporter):
             restored_agent = True
 
             try:
-                logging.info(f"Start local TFC/TFE agent for organization '{organization_id}'")
+                logging.info(
+                    f"Start local TFC/TFE agent for organization '{organization_id}'")
 
-                agent_pool_id = self._create_agent_pool(organization_id=organization_id)
+                agent_pool_id = self._create_agent_pool(
+                    organization_id=organization_id)
 
                 agent_container_name = f"smk-tfc-agent-{organization_id}"
                 agent_container = self._start_agent_container(
@@ -671,7 +687,8 @@ class TerraformExporter(BaseExporter):
                         )
                         continue
 
-                    logging.info(f"Backing up the '{organization_id}/{workspace_id}' workspace execution mode")
+                    logging.info(
+                        f"Backing up the '{organization_id}/{workspace_id}' workspace execution mode")
                     workspace_data_backup = self._extract_data_from_api(
                         path=f"/workspaces/{workspace_id}",
                         properties=[
@@ -683,7 +700,8 @@ class TerraformExporter(BaseExporter):
                         0
                     ]  # KLUDGE: There should be a way to pull single item from the API instead of a list of items
 
-                    logging.info(f"Updating the '{organization_id}/{workspace_id}' workspace to use the TFC Agent")
+                    logging.info(
+                        f"Updating the '{organization_id}/{workspace_id}' workspace to use the TFC Agent")
                     self._extract_data_from_api(
                         method="PATCH",
                         path=f"/workspaces/{workspace_id}",
@@ -700,7 +718,8 @@ class TerraformExporter(BaseExporter):
                     )
                     restored_agent = False
 
-                    logging.info(f"Trigger a plan for the '{organization_id}/{workspace_id}' workspace")
+                    logging.info(
+                        f"Trigger a plan for the '{organization_id}/{workspace_id}' workspace")
                     run_data = self._extract_data_from_api(
                         method="POST",
                         path="/runs",
@@ -721,7 +740,8 @@ class TerraformExporter(BaseExporter):
                     )
 
                     if len(run_data) == 0:
-                        raise TerraformExporterPlanError(organization_id, workspace_id)
+                        raise TerraformExporterPlanError(
+                            organization_id, workspace_id)
 
                     # KLUDGE: There should be a way to pull single item from the API instead of a list of items
                     run_data = run_data[0]
@@ -737,34 +757,62 @@ class TerraformExporter(BaseExporter):
                         logging.debug("Plan output:")
                         logging.debug(logs_data)
 
-                        logging.info("Extract the env var values from the plan output")
+                        logging.info(
+                            "Extract the env var values from the plan output")
                         for line in logs_data.split("\n"):
                             for workspace_variable_id, workspace_variable_name in workspace_variables.items():
-                                prefix = f"{workspace_variable_name}="
+                                prefix = f"SMK_VAR_{workspace_variable_name}="
                                 if line.startswith(prefix):
-                                    value = line.removeprefix(prefix)
-                                    masked_value = "*" * len(value)
+                                    # Decode base64 encoded value
+                                    encoded_value = line.removeprefix(prefix)
+                                    try:
+                                        value = base64.b64decode(
+                                            encoded_value.encode('ascii')).decode('utf-8')
+                                        masked_value = "*" * len(value)
 
-                                    logging.debug(
-                                        f"Found sensitive env var: '{workspace_variable_name}={masked_value}'"
-                                    )
+                                        logging.debug(
+                                            f"Found sensitive env var: '{workspace_variable_name}={masked_value}'"
+                                        )
 
-                                    variable = find_variable(data, workspace_variable_id)
-                                    variable["attributes.value"] = value
+                                        variable = find_variable(
+                                            data, workspace_variable_id)
+                                        variable["attributes.value"] = value
+                                    except Exception as e:
+                                        logging.warning(
+                                            f"Failed to decode variable {workspace_variable_name}: {e}")
+                                        # Fall back to the original encoded value for debugging
+                                        variable = find_variable(
+                                            data, workspace_variable_id)
+                                        variable["attributes.value"] = encoded_value
 
                                 # KLUDGE: Ideally this should be retrieved independently for more clarity,
                                 # and only if needed.
-                                if line.startswith("ATLAS_CONFIGURATION_VERSION_GITHUB_BRANCH="):
-                                    branch_name = line.removeprefix("ATLAS_CONFIGURATION_VERSION_GITHUB_BRANCH=")
-                                    workspace = find_workspace(data, workspace_id)
+                                if line.startswith("SMK_VAR_ATLAS_CONFIGURATION_VERSION_GITHUB_BRANCH="):
+                                    # Decode base64 encoded branch name
+                                    encoded_branch = line.removeprefix(
+                                        "SMK_VAR_ATLAS_CONFIGURATION_VERSION_GITHUB_BRANCH=")
+                                    try:
+                                        branch_name = base64.b64decode(
+                                            encoded_branch.encode('ascii')).decode('utf-8')
+                                        workspace = find_workspace(
+                                            data, workspace_id)
+                                    except Exception as e:
+                                        logging.warning(
+                                            f"Failed to decode ATLAS_CONFIGURATION_VERSION_GITHUB_BRANCH: {e}")
+                                        # Fall back to encoded value
+                                        branch_name = encoded_branch
+                                        workspace = find_workspace(
+                                            data, workspace_id)
                                     if workspace and not workspace.get("attributes.vcs-repo.branch"):
                                         workspace["attributes.vcs-repo.branch"] = branch_name
 
-                    self._restore_workspace_exec_mode(organization_id, workspace_id, workspace_data_backup)
+                    self._restore_workspace_exec_mode(
+                        organization_id, workspace_id, workspace_data_backup)
                     restored_agent = True
 
                 if agent_container.exists() and agent_container.state.running:
-                    logging.debug(f"Local TFC/TFE agent Docker container '{agent_container_id}' logs:")
+                    logging.debug(
+                        f"Local TFC/TFE agent Docker container '{agent_container_id}' logs:")
                     logging.debug(agent_container.logs())
                 else:
                     logging.warning(
@@ -772,10 +820,12 @@ class TerraformExporter(BaseExporter):
                         "was already stopped when we tried to pull the logs. Skipping."
                     )
             finally:
-                logging.info(f"Stop local TFC/TFE agent for organization '{organization_id}'")
+                logging.info(
+                    f"Stop local TFC/TFE agent for organization '{organization_id}'")
 
                 if not restored_agent:
-                    self._restore_workspace_exec_mode(organization_id, current_workspace_id, workspace_data_backup)
+                    self._restore_workspace_exec_mode(
+                        organization_id, current_workspace_id, workspace_data_backup)
 
                 if agent_container:
                     self._stop_agent_container(agent_container)
@@ -825,12 +875,15 @@ class TerraformExporter(BaseExporter):
                 if datum.get("_relationships"):
                     for type_, ids in datum.get("_relationships").items():
                         if isinstance(ids, list):
-                            relationships[type_] = [find_entity(data=data, type_=type_, id_=id_) for id_ in ids]
+                            relationships[type_] = [find_entity(
+                                data=data, type_=type_, id_=id_) for id_ in ids]
                         else:
-                            relationships[type_] = find_entity(data=data, type_=type_, id_=ids)
+                            relationships[type_] = find_entity(
+                                data=data, type_=type_, id_=ids)
 
                 datum.update(
-                    {"_migration_id": self._generate_migration_id(datum.get("name")), "_relationships": relationships}
+                    {"_migration_id": self._generate_migration_id(
+                        datum.get("name")), "_relationships": relationships}
                 )
 
         logging.info("Start expanding relationships")
@@ -1309,7 +1362,8 @@ class TerraformExporter(BaseExporter):
         data = []
         for variable in src_data.get("variable_set_variables"):
             variable_set = find_variable_set(
-                data=src_data, variable_set_id=variable.get("relationships.varset.data.id")
+                data=src_data, variable_set_id=variable.get(
+                    "relationships.varset.data.id")
             )
 
             is_name_valid = True
@@ -1360,12 +1414,14 @@ class TerraformExporter(BaseExporter):
                         "_relationships": {
                             "space": {
                                 "_migration_id": self._generate_migration_id(
-                                    variable_set.get("relationships.organization.data.id")
+                                    variable_set.get(
+                                        "relationships.organization.data.id")
                                 )
                             },
                             "context": {
                                 "_migration_id": self._generate_migration_id(
-                                    variable.get("relationships.varset.data.id")
+                                    variable.get(
+                                        "relationships.varset.data.id")
                                 )
                             },
                         },
@@ -1396,7 +1452,8 @@ class TerraformExporter(BaseExporter):
                         "_relationships": {
                             "space": {
                                 "_migration_id": self._generate_migration_id(
-                                    variable_set.get("relationships.organization.data.id")
+                                    variable_set.get(
+                                        "relationships.organization.data.id")
                                 )
                             },
                             "stacks": [],  # The list is empty because it will be auto-attached to all stacks
@@ -1413,7 +1470,8 @@ class TerraformExporter(BaseExporter):
                 and len(variable_set.get("relationships.projects.data")) > 0
             ):
                 for project in variable_set.get("relationships.projects.data"):
-                    logging.info(f"Append context copy '{project.get('id')}' / '{variable_set.get('id')}'")
+                    logging.info(
+                        f"Append context copy '{project.get('id')}' / '{variable_set.get('id')}'")
                     data.append(
                         {
                             "_migration_id": self._generate_migration_id(variable_set.get("id")),
@@ -1439,7 +1497,8 @@ class TerraformExporter(BaseExporter):
             ):
                 stacks = []
                 for workspace in variable_set.get("relationships.workspaces.data"):
-                    stacks.append({"_migration_id": self._generate_migration_id(workspace.get("id"))})
+                    stacks.append(
+                        {"_migration_id": self._generate_migration_id(workspace.get("id"))})
 
                 data.append(
                     {
@@ -1447,8 +1506,9 @@ class TerraformExporter(BaseExporter):
                         "_relationships": {
                             "space": {
                                 "_migration_id": self._generate_migration_id(
-                                        variable_set.get("relationships.organization.data.id")
-                                    )
+                                    variable_set.get(
+                                        "relationships.organization.data.id")
+                                )
                             },
                             "stacks": stacks,
                         },
@@ -1487,7 +1547,8 @@ class TerraformExporter(BaseExporter):
                 vcs_namespace = segments[1]
                 vcs_repository = segments[3]
             elif not self.is_gitlab and not self.is_ado and module.get("attributes.vcs-repo.identifier"):
-                segments = module.get("attributes.vcs-repo.identifier").split("/")
+                segments = module.get(
+                    "attributes.vcs-repo.identifier").split("/")
                 vcs_namespace = segments[0]
                 vcs_repository = segments[1]
             else:
@@ -1563,7 +1624,8 @@ class TerraformExporter(BaseExporter):
         prog = re.compile("^[a-zA-Z_]+[a-zA-Z0-9_]*$")
         data = []
         for variable in src_data.get("workspace_variables"):
-            workspace = find_workspace(data=src_data, workspace_id=variable.get("relationships.workspace.data.id"))
+            workspace = find_workspace(data=src_data, workspace_id=variable.get(
+                "relationships.workspace.data.id"))
 
             is_name_valid = True
 
@@ -1610,7 +1672,8 @@ class TerraformExporter(BaseExporter):
         if provider is None:
             organization_name = info.get("relationships.organization.data.id")
             workspace_name = info.get("attributes.name")
-            logging.warning(f"Workspace '{organization_name}/{workspace_name}' has no VCS configuration")
+            logging.warning(
+                f"Workspace '{organization_name}/{workspace_name}' has no VCS configuration")
         elif provider in supported_providers:
             provider = supported_providers[provider]
         else:
@@ -1643,12 +1706,14 @@ class TerraformExporter(BaseExporter):
 
             for variable in data.get("workspace_variables"):
                 if (variable.get("attributes.sensitive") is True and type_ == "plain") or (
-                    variable.get("attributes.sensitive") is False and type_ == "secret"
+                    variable.get(
+                        "attributes.sensitive") is False and type_ == "secret"
                 ):
                     continue
 
                 if (
-                    variable.get("relationships.workspace.data.id") == workspace_id
+                    variable.get(
+                        "relationships.workspace.data.id") == workspace_id
                     and re.search(prog, variable.get("attributes.key")) is None
                 ):
                     variables.append(variable)
@@ -1723,19 +1788,22 @@ class TerraformExporter(BaseExporter):
 
         data = benedict(
             {
-                "spaces": self._map_spaces_data(src_data),  # Must be first due to dependency
+                # Must be first due to dependency
+                "spaces": self._map_spaces_data(src_data),
                 "contexts": [],
                 "context_variables": [],  # Must be after contexts due to dependency
                 # Stacks must be before modules so we can determine is_gitlab so we set VCS properly
                 "stacks": self._map_stacks_data(src_data),
                 "modules": self._map_modules_data(src_data),
-                "stack_variables": self._map_stack_variables_data(src_data),  # Must be after stacks due to dependency
+                # Must be after stacks due to dependency
+                "stack_variables": self._map_stack_variables_data(src_data),
             }
         )
 
         if self.experimental_support_variable_sets:
             data["contexts"] = self._map_contexts_data(src_data)
-            data["context_variables"] = self._map_context_variables_data(src_data)
+            data["context_variables"] = self._map_context_variables_data(
+                src_data)
 
         data = self._mark_spaces_for_terraform_custom_workflow(data)
         data = self._expand_relationships(data)
@@ -1762,7 +1830,8 @@ class TerraformExporter(BaseExporter):
                 if space:
                     space["requires_terraform_workflow_tool"] = True
                 else:
-                    logging.warning(f"Could not find space '{stack.get('_relationships.space')}'")
+                    logging.warning(
+                        f"Could not find space '{stack.get('_relationships.space')}'")
 
         logging.info("Stop marking spaces for Terraform custom workflow")
 
@@ -1782,7 +1851,7 @@ class TerraformExporter(BaseExporter):
             },
             image=self._config.get("agent_image", "ghcr.io/spacelift-io/spacelift-migration-kit:latest"),
             name=container_name,
-            pull="always",
+            pull="never",
             remove=True,
             volumes=[(self.tempdir, "/mnt/spacelift-migration-kit")]
         )
